@@ -1,0 +1,159 @@
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0d1117;
+  --bg-card: rgba(19, 25, 41, 0.8);
+  --accent: #4a80ec;
+  --accent-glow: rgba(74, 128, 236, 0.4);
+  --border-glass: rgba(74, 128, 236, 0.25);
+  --text-primary: #e8edf5;
+  --text-muted: #7a8aaa;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: 'Heebo', sans-serif;
+  direction: rtl;
+  min-height: 100vh;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(74, 128, 236, 0.3);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(74, 128, 236, 0.6);
+}
+
+/* Glass card utility */
+.glass-card {
+  background: var(--bg-card);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-glass);
+  border-radius: 16px;
+}
+
+/* Glow border utility */
+.glow-border {
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow), inset 0 0 12px rgba(74, 128, 236, 0.05);
+}
+
+/* Shimmer button */
+.btn-shimmer {
+  background: linear-gradient(
+    90deg,
+    #4a80ec 0%,
+    #6b9bf0 25%,
+    #4a80ec 50%,
+    #3366cc 75%,
+    #4a80ec 100%
+  );
+  background-size: 200% auto;
+  animation: shimmer 2s linear infinite;
+}
+
+/* Focus ring */
+textarea:focus,
+input:focus {
+  outline: none;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 3px var(--accent-glow);
+}
+
+/* RTL adjustments */
+.rtl-grid {
+  direction: rtl;
+}
+
+/* Step dots */
+.step-dot {
+  transition: all 0.3s ease;
+}
+
+.step-dot.active {
+  background: var(--accent);
+  box-shadow: 0 0 8px var(--accent-glow);
+}
+
+.step-dot.completed {
+  background: #4caf8a;
+  box-shadow: 0 0 8px rgba(76, 175, 138, 0.5);
+}
+
+/* Flash reveal for diagram */
+@keyframes flashReveal {
+  0% {
+    opacity: 0;
+    transform: scale(0.92) translateY(16px);
+    filter: brightness(2);
+  }
+  30% {
+    filter: brightness(1.4);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+    filter: brightness(1);
+  }
+}
+
+.diagram-reveal {
+  animation: flashReveal 0.5s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Dashed drop zone */
+.drop-zone {
+  border: 2px dashed rgba(74, 128, 236, 0.4);
+  transition: all 0.2s ease;
+}
+
+.drop-zone:hover,
+.drop-zone.drag-over {
+  border-color: var(--accent);
+  background: rgba(74, 128, 236, 0.06);
+  box-shadow: 0 0 20px var(--accent-glow);
+}
+
+/* Gradient download button */
+.btn-download {
+  background: linear-gradient(135deg, #4a80ec, #4caf8a);
+  background-size: 200% 200%;
+  transition: background-position 0.4s ease, transform 0.2s ease;
+}
+
+.btn-download:hover {
+  background-position: right center;
+  transform: translateY(-1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
