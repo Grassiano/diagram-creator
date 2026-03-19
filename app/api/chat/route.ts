@@ -69,17 +69,22 @@ export async function POST(request: NextRequest): Promise<NextResponse<ChatRespo
     { role: 'user', content: message },
   ];
 
-  const response = await client.messages.create({
-    model: 'claude-opus-4-6',
-    max_tokens: 2048,
-    system: CLAUDE_DIAGRAM_SYSTEM,
-    messages,
-  });
+  try {
+    const response = await client.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 2048,
+      system: CLAUDE_DIAGRAM_SYSTEM,
+      messages,
+    });
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
 
-  return NextResponse.json(parseClaude(text));
+    return NextResponse.json(parseClaude(text));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'שגיאת שרת';
+    return NextResponse.json({ type: 'error' as const, message }, { status: 500 });
+  }
 }

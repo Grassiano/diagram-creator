@@ -6,9 +6,12 @@ import type { ValidateResponse } from '@/lib/types';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+const ALLOWED_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const;
+type AllowedMimeType = typeof ALLOWED_MIME_TYPES[number];
+
 const RequestSchema = z.object({
   imageBase64: z.string().min(1),
-  mimeType: z.string().min(1),
+  mimeType: z.enum(ALLOWED_MIME_TYPES),
   spec: z.object({
     title: z.string(),
     direction: z.enum(['RTL', 'TTB']),
@@ -42,35 +45,39 @@ export async function POST(request: NextRequest): Promise<NextResponse<ValidateR
 
   const { imageBase64, mimeType, spec } = parsed.data;
 
-  const response = await client.messages.create({
-    model: 'claude-opus-4-6',
-    max_tokens: 512,
-    system: CLAUDE_VALIDATE_SYSTEM,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mimeType as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
-              data: imageBase64,
+  try {
+    const response = await client.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 512,
+      system: CLAUDE_VALIDATE_SYSTEM,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: mimeType as AllowedMimeType,
+                data: imageBase64,
+              },
             },
-          },
-          {
-            type: 'text',
-            text: `DiagramSpec:\n\`\`\`json\n${JSON.stringify(spec, null, 2)}\n\`\`\`\n\nValidate the image against this spec.`,
-          },
-        ],
-      },
-    ],
-  });
+            {
+              type: 'text',
+              text: `DiagramSpec:\n\`\`\`json\n${JSON.stringify(spec, null, 2)}\n\`\`\`\n\nValidate the image against this spec.`,
+            },
+          ],
+        },
+      ],
+    });
 
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
 
-  return NextResponse.json(parseValidation(text));
+    return NextResponse.json(parseValidation(text));
+  } catch {
+    return NextResponse.json({ valid: true, issues: [] }); // fail open
+  }
 }

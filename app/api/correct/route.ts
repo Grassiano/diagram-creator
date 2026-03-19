@@ -6,9 +6,12 @@ import type { CorrectResponse, DiagramSpec } from '@/lib/types';
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+const ALLOWED_MIME_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const;
+type AllowedMimeType = typeof ALLOWED_MIME_TYPES[number];
+
 const RequestSchema = z.object({
   imageBase64: z.string().min(1),
-  mimeType: z.string().min(1),
+  mimeType: z.enum(ALLOWED_MIME_TYPES),
   currentSpec: z.object({
     title: z.string(),
     direction: z.enum(['RTL', 'TTB']),
@@ -47,39 +50,40 @@ export async function POST(request: NextRequest): Promise<NextResponse<CorrectRe
 
   const { imageBase64, mimeType, currentSpec, correctionPrompt } = parsed.data;
 
-  const response = await client.messages.create({
-    model: 'claude-opus-4-6',
-    max_tokens: 2048,
-    system: CLAUDE_CORRECT_SYSTEM,
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mimeType as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
-              data: imageBase64,
-            },
-          },
-          {
-            type: 'text',
-            text: `DiagramSpec הנוכחי:\n\`\`\`json\n${JSON.stringify(currentSpec, null, 2)}\n\`\`\`\n\nבקשת תיקון: ${correctionPrompt}`,
-          },
-        ],
-      },
-    ],
-  });
-
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
-
   try {
+    const response = await client.messages.create({
+      model: 'claude-opus-4-6',
+      max_tokens: 2048,
+      system: CLAUDE_CORRECT_SYSTEM,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: mimeType as AllowedMimeType,
+                data: imageBase64,
+              },
+            },
+            {
+              type: 'text',
+              text: `DiagramSpec הנוכחי:\n\`\`\`json\n${JSON.stringify(currentSpec, null, 2)}\n\`\`\`\n\nבקשת תיקון: ${correctionPrompt}`,
+            },
+          ],
+        },
+      ],
+    });
+
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map((b) => b.text)
+      .join('');
+
     return NextResponse.json(parseCorrection(text));
-  } catch {
-    return NextResponse.json({ error: 'שגיאה בעיבוד התיקון' }, { status: 500 });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'שגיאה בעיבוד התיקון';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

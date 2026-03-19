@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChatMessage, ChatResponse, CorrectResponse, DiagramSpec, GenerateResponse, ValidateResponse } from '@/lib/types';
 
 type Step = 'idle' | 'analyzing' | 'generating' | 'validating' | 'done' | 'error';
@@ -16,6 +16,8 @@ const STEP_LABELS: Record<Step, string> = {
 
 const STEP_ORDER: Step[] = ['analyzing', 'generating', 'validating', 'done'];
 
+const isMac = typeof navigator !== 'undefined' && navigator.platform.includes('Mac');
+
 export default function HomePage() {
   const [input, setInput] = useState('');
   const [history, setHistory] = useState<ChatMessage[]>([]);
@@ -25,11 +27,20 @@ export default function HomePage() {
   const [image, setImage] = useState<GenerateResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [correctionText, setCorrectionText] = useState('');
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<string | null>(null);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const correctionInputRef = useRef<HTMLInputElement>(null);
+  const resultRef = useRef<HTMLDivElement>(null);
+
+  // Auto-focus textarea on mount
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
 
   const resetError = () => {
     setErrorMsg(null);
@@ -41,25 +52,34 @@ export default function HomePage() {
     const link = document.createElement('a');
     link.href = `data:${image.mimeType};base64,${image.imageBase64}`;
     link.download = `diagram-${Date.now()}.png`;
+    link.style.display = 'none';
+    document.body.appendChild(link);
     link.click();
+    document.body.removeChild(link);
   };
 
   const runGenerate = useCallback(async (spec: DiagramSpec): Promise<GenerateResponse | null> => {
     setStep('generating');
-    const res = await fetch('/api/generate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(spec),
-    });
+    try {
+      const res = await fetch('/api/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(spec),
+      });
 
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'שגיאת יצירה' })) as { error: string };
-      setErrorMsg(err.error);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'שגיאת יצירה' })) as { error: string };
+        setErrorMsg(err.error);
+        setStep('error');
+        return null;
+      }
+
+      return res.json() as Promise<GenerateResponse>;
+    } catch {
+      setErrorMsg('שגיאת רשת — בדוק חיבור לאינטרנט');
       setStep('error');
       return null;
     }
-
-    return res.json() as Promise<GenerateResponse>;
   }, []);
 
   const runValidate = useCallback(async (
@@ -67,24 +87,28 @@ export default function HomePage() {
     spec: DiagramSpec,
   ): Promise<boolean> => {
     setStep('validating');
-    const res = await fetch('/api/validate', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageBase64: genResult.imageBase64, mimeType: genResult.mimeType, spec }),
-    });
+    try {
+      const res = await fetch('/api/validate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ imageBase64: genResult.imageBase64, mimeType: genResult.mimeType, spec }),
+      });
 
-    if (!res.ok) return true; // fail open — show the image anyway
-    const validation = await res.json() as ValidateResponse;
+      if (!res.ok) return true; // fail open — show the image anyway
+      const validation = await res.json() as ValidateResponse;
 
-    if (!validation.valid && validation.issues.length > 0) {
-      // One automatic retry
-      const retry = await runGenerate(spec);
-      if (!retry) return false;
-      setImage(retry);
+      if (!validation.valid && validation.issues.length > 0) {
+        // One automatic retry
+        const retry = await runGenerate(spec);
+        if (!retry) return false;
+        setImage(retry);
+        return true;
+      }
+
       return true;
+    } catch {
+      return true; // fail open
     }
-
-    return true;
   }, [runGenerate]);
 
   const runPipeline = useCallback(async (message: string, msgs: ChatMessage[]) => {
@@ -92,43 +116,55 @@ export default function HomePage() {
     setErrorMsg(null);
     setClarification(null);
 
-    const chatRes = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, history: msgs }),
-    });
+    try {
+      const chatRes = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, history: msgs }),
+      });
 
-    if (!chatRes.ok) {
-      setErrorMsg('שגיאת תקשורת עם השרת');
+      if (!chatRes.ok) {
+        setErrorMsg('שגיאת תקשורת עם השרת');
+        setStep('error');
+        return;
+      }
+
+      const chatData = await chatRes.json() as ChatResponse;
+
+      if (chatData.type === 'clarification' && chatData.question) {
+        setClarification(chatData.question);
+        setHistory((h) => [...h, { role: 'user', content: message }, { role: 'assistant', content: chatData.question! }]);
+        setStep('idle');
+        // Focus textarea so user can answer immediately
+        setTimeout(() => textareaRef.current?.focus(), 50);
+        return;
+      }
+
+      if (chatData.type === 'error' || !chatData.spec) {
+        setErrorMsg(chatData.message ?? 'שגיאה לא ידועה');
+        setStep('error');
+        return;
+      }
+
+      const spec = chatData.spec;
+      setCurrentSpec(spec);
+      setHistory((h) => [...h, { role: 'user', content: message }]);
+
+      const genResult = await runGenerate(spec);
+      if (!genResult) return;
+
+      setImage(genResult);
+      await runValidate(genResult, spec);
+      setStep('done');
+
+      // Scroll result into view and focus correction input
+      setTimeout(() => {
+        resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }, 100);
+    } catch {
+      setErrorMsg('שגיאת רשת — בדוק חיבור לאינטרנט');
       setStep('error');
-      return;
     }
-
-    const chatData = await chatRes.json() as ChatResponse;
-
-    if (chatData.type === 'clarification' && chatData.question) {
-      setClarification(chatData.question);
-      setHistory((h) => [...h, { role: 'user', content: message }, { role: 'assistant', content: chatData.question! }]);
-      setStep('idle');
-      return;
-    }
-
-    if (chatData.type === 'error' || !chatData.spec) {
-      setErrorMsg(chatData.message ?? 'שגיאה לא ידועה');
-      setStep('error');
-      return;
-    }
-
-    const spec = chatData.spec;
-    setCurrentSpec(spec);
-    setHistory((h) => [...h, { role: 'user', content: message }]);
-
-    const genResult = await runGenerate(spec);
-    if (!genResult) return;
-
-    setImage(genResult);
-    await runValidate(genResult, spec);
-    setStep('done');
   }, [runGenerate, runValidate]);
 
   const handleSubmit = async () => {
@@ -145,59 +181,77 @@ export default function HomePage() {
     if (!correction || !image || !currentSpec) return;
     if (step === 'analyzing' || step === 'generating' || step === 'validating') return;
 
+    // Use a local analyzing state — don't clobber main step (keeps diagram visible)
     setStep('analyzing');
-    setErrorMsg(null);
+    setCorrectionError(null);
 
-    const res = await fetch('/api/correct', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        imageBase64: image.imageBase64,
-        mimeType: image.mimeType,
-        currentSpec,
-        correctionPrompt: correction,
-      }),
-    });
+    try {
+      const res = await fetch('/api/correct', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64: image.imageBase64,
+          mimeType: image.mimeType,
+          currentSpec,
+          correctionPrompt: correction,
+        }),
+      });
 
-    if (!res.ok) {
-      setErrorMsg('שגיאה בעיבוד התיקון');
-      setStep('error');
-      return;
+      if (!res.ok) {
+        setCorrectionError('שגיאה בעיבוד התיקון');
+        setStep('done'); // stay on done — diagram still visible
+        return;
+      }
+
+      const corrData = await res.json() as CorrectResponse | { error: string };
+      if ('error' in corrData) {
+        setCorrectionError(corrData.error);
+        setStep('done');
+        return;
+      }
+
+      setCurrentSpec(corrData.spec);
+      setCorrectionText('');
+
+      const genResult = await runGenerate(corrData.spec);
+      if (!genResult) {
+        setStep('done'); // stay on done
+        return;
+      }
+
+      setImage(genResult);
+      await runValidate(genResult, corrData.spec);
+      setStep('done');
+    } catch {
+      setCorrectionError('שגיאת רשת — בדוק חיבור לאינטרנט');
+      setStep('done');
     }
-
-    const corrData = await res.json() as CorrectResponse | { error: string };
-    if ('error' in corrData) {
-      setErrorMsg(corrData.error);
-      setStep('error');
-      return;
-    }
-
-    setCurrentSpec(corrData.spec);
-    setCorrectionText('');
-
-    const genResult = await runGenerate(corrData.spec);
-    if (!genResult) return;
-
-    setImage(genResult);
-    await runValidate(genResult, corrData.spec);
-    setStep('done');
   };
 
   const handleFileUpload = async (file: File) => {
+    setIsUploadingFile(true);
     const formData = new FormData();
     formData.append('file', file);
 
-    const res = await fetch('/api/extract', { method: 'POST', body: formData });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: 'שגיאה בחילוץ הקובץ' })) as { error: string };
-      setErrorMsg(err.error);
-      return;
-    }
+    try {
+      const res = await fetch('/api/extract', { method: 'POST', body: formData });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: 'שגיאה בחילוץ הקובץ' })) as { error: string };
+        setErrorMsg(err.error);
+        setStep('error');
+        return;
+      }
 
-    const { text, filename } = await res.json() as { text: string; filename: string };
-    setUploadedFile(filename);
-    setInput((prev) => (prev ? `${prev}\n\n${text}` : text));
-    textareaRef.current?.focus();
+      const { text, filename } = await res.json() as { text: string; filename: string };
+      setUploadedFile(filename);
+      setInput((prev) => (prev ? `${prev}\n\n${text}` : text));
+      textareaRef.current?.focus();
+    } catch {
+      setErrorMsg('שגיאת רשת בהעלאת הקובץ');
+      setStep('error');
+    } finally {
+      setIsUploadingFile(false);
+    }
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -205,6 +259,18 @@ export default function HomePage() {
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
     if (file) void handleFileUpload(file);
+  };
+
+  const handleNewDiagram = () => {
+    if (image && !window.confirm('הדיאגרמה הנוכחית תאבד. להמשיך?')) return;
+    setImage(null);
+    setCurrentSpec(null);
+    setHistory([]);
+    setStep('idle');
+    setClarification(null);
+    setCorrectionError(null);
+    setInput('');
+    setTimeout(() => textareaRef.current?.focus(), 50);
   };
 
   const isLoading = step === 'analyzing' || step === 'generating' || step === 'validating';
@@ -248,8 +314,9 @@ export default function HomePage() {
                 color: '#a8c4f5',
               }}
               role="status"
+              aria-live="polite"
             >
-              <span className="text-xs block mb-1 opacity-70">שאלת הבהרה:</span>
+              <span className="text-xs block mb-1 opacity-70">שאלת הבהרה — הקלד את תשובתך למטה:</span>
               {clarification}
             </div>
           )}
@@ -279,9 +346,9 @@ export default function HomePage() {
                 void handleSubmit();
               }
             }}
-            placeholder="תאר את הדיאגרמה שאתה רוצה ליצור..."
+            placeholder={clarification ? 'הקלד את תשובתך כאן...' : 'תאר את הדיאגרמה שאתה רוצה ליצור...'}
             disabled={isLoading}
-            aria-label="תיאור דיאגרמה"
+            aria-label={clarification ? 'תשובה לשאלת הבהרה' : 'תיאור דיאגרמה'}
             rows={3}
             className="w-full resize-none rounded-xl px-4 py-3 text-sm transition-all duration-200 disabled:opacity-50"
             style={{
@@ -298,7 +365,7 @@ export default function HomePage() {
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              disabled={isLoading}
+              disabled={isLoading || isUploadingFile}
               aria-label="העלה קובץ PDF, DOCX, או TXT"
               className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs transition-all duration-200 cursor-pointer hover:opacity-80 disabled:opacity-40"
               style={{
@@ -307,12 +374,19 @@ export default function HomePage() {
                 color: 'var(--text-muted)',
               }}
             >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="17 8 12 3 7 8" />
-                <line x1="12" y1="3" x2="12" y2="15" />
-              </svg>
-              העלה קובץ
+              {isUploadingFile ? (
+                <svg className="animate-spin-slow w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10" strokeOpacity="0.3" />
+                  <path d="M12 2a10 10 0 0 1 10 10" />
+                </svg>
+              ) : (
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="17 8 12 3 7 8" />
+                  <line x1="12" y1="3" x2="12" y2="15" />
+                </svg>
+              )}
+              {isUploadingFile ? 'מעלה...' : 'העלה קובץ'}
             </button>
             <input
               ref={fileInputRef}
@@ -369,15 +443,15 @@ export default function HomePage() {
           {/* Hint */}
           {!isLoading && !image && (
             <p className="text-xs text-center" style={{ color: 'var(--text-muted)' }}>
-              Cmd+Enter לשליחה מהירה • תומך בקבצי PDF, DOCX, TXT
+              {isMac ? '⌘' : 'Ctrl'}+Enter לשליחה מהירה • תומך בקבצי PDF, DOCX, TXT
             </p>
           )}
         </div>
 
         {/* Progress steps */}
         {isLoading && (
-          <div className="glass-card p-4 animate-slide-up" role="status" aria-live="polite">
-            <div className="flex items-center justify-center gap-6" aria-label={STEP_LABELS[step]}>
+          <div className="glass-card p-4 animate-slide-up" role="status" aria-live="polite" aria-label={STEP_LABELS[step]}>
+            <div className="flex items-center justify-center gap-6">
               {STEP_ORDER.filter((s) => s !== 'done').map((s, i) => {
                 const isActive = step === s;
                 const isCompleted = currentStepIndex > i;
@@ -405,7 +479,7 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Error state */}
+        {/* Error state (pipeline errors only) */}
         {step === 'error' && errorMsg && (
           <div
             className="glass-card p-4 animate-slide-up"
@@ -429,7 +503,7 @@ export default function HomePage() {
                 className="text-xs px-3 py-1 rounded-lg cursor-pointer hover:opacity-80 transition-opacity"
                 style={{ background: 'rgba(229, 115, 115, 0.15)', color: '#e57373' }}
               >
-                נסה שוב
+                סגור
               </button>
             </div>
           </div>
@@ -437,13 +511,13 @@ export default function HomePage() {
 
         {/* Diagram result */}
         {image && step === 'done' && (
-          <div className="glass-card p-4 space-y-4 animate-slide-up">
+          <div ref={resultRef} className="glass-card p-4 space-y-4 animate-slide-up">
             {/* Image */}
             <div
               className="rounded-xl overflow-hidden"
               style={{ border: '1px solid rgba(74, 128, 236, 0.2)' }}
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
+              {/* eslint-disable-next-line @next/next/no-img-element -- base64 data URI, Next Image doesn't support it */}
               <img
                 src={`data:${image.mimeType};base64,${image.imageBase64}`}
                 alt={currentSpec?.title ?? 'דיאגרמת זרימה'}
@@ -470,14 +544,7 @@ export default function HomePage() {
 
               <button
                 type="button"
-                onClick={() => {
-                  setImage(null);
-                  setCurrentSpec(null);
-                  setHistory([]);
-                  setStep('idle');
-                  setClarification(null);
-                  setInput('');
-                }}
+                onClick={handleNewDiagram}
                 aria-label="צור דיאגרמה חדשה"
                 className="flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm cursor-pointer hover:opacity-80 transition-opacity"
                 style={{
@@ -499,9 +566,15 @@ export default function HomePage() {
               <label htmlFor="correction-input" className="text-xs font-medium" style={{ color: 'var(--text-muted)' }}>
                 תיקון / שינוי:
               </label>
+
+              {correctionError && (
+                <p className="text-xs" style={{ color: '#e57373' }} role="alert">{correctionError}</p>
+              )}
+
               <div className="flex gap-2">
                 <input
                   id="correction-input"
+                  ref={correctionInputRef}
                   type="text"
                   value={correctionText}
                   onChange={(e) => setCorrectionText(e.target.value)}
@@ -525,7 +598,7 @@ export default function HomePage() {
                   className="px-4 py-2 rounded-lg text-sm font-medium cursor-pointer transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
                   style={{ background: 'rgba(74, 128, 236, 0.2)', color: '#a8c4f5', border: '1px solid rgba(74, 128, 236, 0.3)' }}
                 >
-                  תקן
+                  {isLoading ? '...' : 'תקן'}
                 </button>
               </div>
             </div>

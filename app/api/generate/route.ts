@@ -4,7 +4,9 @@ import { z } from 'zod';
 import { buildDiagramPrompt } from '@/lib/diagram-style';
 import type { DiagramSpec, GenerateResponse } from '@/lib/types';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_API_KEY ?? '' });
+const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+if (!GOOGLE_API_KEY) throw new Error('GOOGLE_API_KEY is not set');
+const ai = new GoogleGenAI({ apiKey: GOOGLE_API_KEY });
 
 const NodeSchema = z.object({
   id: z.string(),
@@ -37,24 +39,29 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
 
   const prompt = buildDiagramPrompt(parsed.data);
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-2.0-flash-preview-image-generation',
-    contents: prompt,
-    config: {
-      responseModalities: ['IMAGE', 'TEXT'],
-    },
-  });
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash-preview-image-generation',
+      contents: prompt,
+      config: {
+        responseModalities: ['IMAGE', 'TEXT'],
+      },
+    });
 
-  const imagePart = response.candidates
-    ?.flatMap((c) => c.content?.parts ?? [])
-    .find((p) => p.inlineData?.mimeType?.startsWith('image/'));
+    const imagePart = response.candidates
+      ?.flatMap((c) => c.content?.parts ?? [])
+      .find((p) => p.inlineData?.mimeType?.startsWith('image/'));
 
-  if (!imagePart?.inlineData?.data || !imagePart.inlineData.mimeType) {
-    return NextResponse.json({ error: 'Gemini לא החזיר תמונה' }, { status: 500 });
+    if (!imagePart?.inlineData?.data || !imagePart.inlineData.mimeType) {
+      return NextResponse.json({ error: 'Gemini לא החזיר תמונה' }, { status: 500 });
+    }
+
+    return NextResponse.json({
+      imageBase64: imagePart.inlineData.data,
+      mimeType: imagePart.inlineData.mimeType,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'שגיאת יצירת תמונה';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
-
-  return NextResponse.json({
-    imageBase64: imagePart.inlineData.data,
-    mimeType: imagePart.inlineData.mimeType,
-  });
 }
