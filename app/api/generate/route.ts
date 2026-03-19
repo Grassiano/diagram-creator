@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { buildDiagramPrompt } from '@/lib/diagram-style';
 import type { DiagramSpec, GenerateResponse } from '@/lib/types';
 
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
-if (!GOOGLE_API_KEY) throw new Error('GOOGLE_API_KEY is not set');
-const ai = new GoogleGenAI({ apiKey: GOOGLE_API_KEY });
+function getAI() {
+  const key = process.env.GOOGLE_API_KEY;
+  if (!key) throw new Error('GOOGLE_API_KEY is not set');
+  return new GoogleGenAI({ apiKey: key });
+}
 
 const NodeSchema = z.object({
   id: z.string(),
@@ -40,7 +42,7 @@ export async function POST(request: NextRequest): Promise<NextResponse<GenerateR
   const prompt = buildDiagramPrompt(parsed.data);
 
   try {
-    const response = await ai.models.generateContent({
+    const response = await getAI().models.generateContent({
       model: 'gemini-2.0-flash-preview-image-generation',
       contents: prompt,
       config: {
